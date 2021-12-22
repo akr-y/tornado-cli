@@ -121,16 +121,50 @@ async function generateMerkleProof(deposit, amount) {
   let leafIndex = -1
   // Get all deposit events from smart contract and assemble merkle tree from them
 
-  const cachedEvents = loadCachedEvents({ type: 'Deposit', amount })
+  // const cachedEvents = loadCachedEvents({ type: 'Deposit', amount })
 
-  const startBlock = cachedEvents.lastBlock
+  // const startBlock = cachedEvents.lastBlock
 
-  let rpcEvents = await tornadoContract.getPastEvents('Deposit', {
-    fromBlock: startBlock,
-    toBlock: 'latest'
-  })
+  let allEvents = []
+  async function getAllEvents() {
+    const latestBlockNumber = await web3.eth.getBlockNumber()
 
-  rpcEvents = rpcEvents.map(({ blockNumber, transactionHash, returnValues }) => {
+    console.log(latestBlockNumber)
+    const max = Math.floor(latestBlockNumber / 100000) + 1
+    const _range = [...Array(max).keys()]
+    for (let i = 0; i < _range.length; i++) {
+      const _i = (i + 1) * 100000
+      const fromBlock = _i - 100000
+      const toBlock = _i
+      const _events = await tornadoContract.getPastEvents('Deposit', { fromBlock, toBlock })
+      if (_events.length > 0) {
+        allEvents = allEvents.concat(_events)
+      }
+    }
+    return allEvents
+  }
+  await getAllEvents()
+
+  // let rpcEvents = await tornadoContract.getPastEvents('Deposit', {
+  //   fromBlock: startBlock,
+  //   toBlock: 'latest'
+  // })
+
+  // rpcEvents = rpcEvents.map(({ blockNumber, transactionHash, returnValues }) => {
+  //   const { commitment, leafIndex, timestamp } = returnValues
+  //   return {
+  //     blockNumber,
+  //     transactionHash,
+  //     commitment,
+  //     leafIndex: Number(leafIndex),
+  //     timestamp
+  //   }
+  // })
+
+  // const events = cachedEvents.events.concat(rpcEvents)
+  // console.log('events', events.length)
+
+  const rpcEvents = allEvents.map(({ blockNumber, transactionHash, returnValues }) => {
     const { commitment, leafIndex, timestamp } = returnValues
     return {
       blockNumber,
@@ -141,10 +175,7 @@ async function generateMerkleProof(deposit, amount) {
     }
   })
 
-  const events = cachedEvents.events.concat(rpcEvents)
-  console.log('events', events.length)
-
-  const leaves = events
+  const leaves = rpcEvents
     .sort((a, b) => a.leafIndex - b.leafIndex) // Sort events in chronological order
     .map((e) => {
       const index = toBN(e.leafIndex).toNumber()
@@ -154,10 +185,12 @@ async function generateMerkleProof(deposit, amount) {
       }
       return toBN(e.commitment).toString(10)
     })
+
   const tree = new merkleTree(MERKLE_TREE_HEIGHT, leaves)
 
   // Validate that our data is correct
   const root = await tree.root()
+
   const isValidRoot = await tornadoContract.methods.isKnownRoot(toHex(root)).call()
   const isSpent = await tornadoContract.methods.isSpent(toHex(deposit.nullifierHash)).call()
   assert(isValidRoot === true, 'Merkle tree is corrupted')
@@ -197,7 +230,6 @@ async function generateProof({ deposit, amount, recipient, relayerAddress = 0, f
     pathIndices: path_index
   }
 
-  console.log('Generating SNARK proof')
   console.time('Proof time')
   const proofData = await websnarkUtils.genWitnessAndProve(groth16, input, circuit, proving_key)
   const { proof } = websnarkUtils.toSolidityInput(proofData)
@@ -494,7 +526,7 @@ function loadCachedEvents({ type, amount }) {
     if (netId !== 1) {
       return {
         events: [],
-        lastBlock: 0,
+        lastBlock: 0
       }
     }
 
@@ -629,6 +661,7 @@ async function init({ rpc, noteNetId, currency = 'dai', amount = '100' }) {
     instanceJson = await (await fetch('build/contracts/Instance.abi.json')).json()
     circuit = await (await fetch('build/circuits/tornado.json')).json()
     proving_key = await (await fetch('build/circuits/tornadoProvingKey.bin')).arrayBuffer()
+
     MERKLE_TREE_HEIGHT = 20
     ETH_AMOUNT = 1e18
     TOKEN_AMOUNT = 1e19
@@ -662,7 +695,6 @@ async function init({ rpc, noteNetId, currency = 'dai', amount = '100' }) {
     throw new Error('This note is for a different network. Specify the --rpc option explicitly')
   }
   isLocalRPC = netId > 42
-
   if (isLocalRPC) {
     tornadoAddress = currency === 'eth' ? contractJson.networks[netId].address : erc20tornadoJson.networks[netId].address
     tokenAddress = currency !== 'eth' ? erc20ContractJson.networks[netId].address : null
